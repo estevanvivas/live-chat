@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat en Vivo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
+</head>
+<body>
+<div class="container py-4">
+    <div class="row">
+        <div class="col-12">
+            <div class="chat-container bg-white">
+                <div class="chat-header">
+                    <div class="d-flex flex-wrap align-items-center justify-content-between py-2">
+                        <div class="d-flex align-items-center me-auto mb-2 mb-md-0">
+                            <h3 class="mb-0 me-2"><i class="fas fa-comments me-2"></i>Chat en Vivo</h3>
+                            <div id="connection-status" class="d-flex align-items-center ms-2">
+                                <span class="status-indicator status-online"></span>
+                                <span class="d-none d-sm-inline">Conectado</span>
+                            </div>
+                        </div>
+
+                        <div class="d-flex align-items-center">
+                            <div class="user-avatar d-none d-sm-flex">
+                                {{ current_user.username[0].upper() }}
+                            </div>
+                            <div class="mx-2">
+                                <strong>{{ current_user.username }}</strong>
+                                <div class="small text-light">En línea</div>
+                            </div>
+                            <a href="{{ url_for('logout') }}" class="btn btn-sm btn-light ms-2">
+                                <i class="fas fa-sign-out-alt"></i>
+                                <span class="d-none d-sm-inline ms-1">Salir</span>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row g-0">
+                    <div class="col-md-3 d-none d-md-block">
+                        <div class="users-sidebar">
+                            <h5 class="mb-3"><i class="fas fa-users me-2"></i>Usuarios</h5>
+                            <div id="users-list">
+                                <div class="user-item d-flex align-items-center mb-2">
+                                    <span class="status-indicator status-online"></span>
+                                    <span>{{ current_user.username }}</span>
+                                    <span class="ms-1 badge bg-secondary">tú</span>
+                                </div>
+                                <div id="other-users"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-9">
+                        <div class="chat-content">
+                            <div class="d-flex justify-content-between align-items-center p-2 bg-light border-bottom">
+                                <div class="d-md-none">
+                                    <button class="btn btn-sm btn-outline-secondary" id="toggle-users">
+                                        <i class="fas fa-users"></i>
+                                    </button>
+                                </div>
+                                <div id="typing-status" class="fst-italic text-muted small"></div>
+                            </div>
+                            <div class="card-body p-0" id="chat-box">
+                                <!-- Messages will be here -->
+                            </div>
+                            <div class="chat-input">
+                                <form id="message-form">
+                                    <div class="input-group">
+                                        <input type="text" id="message" class="form-control"
+                                               placeholder="Escribe un mensaje..." required>
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="fas fa-paper-plane me-1"></i>Enviar
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<script>
+    const socket = io();
+    let typingTimer;
+    const username = "{{ session.username }}";
+    let connectedUsers = new Set();
+
+    socket.on('connect', () => {
+        document.getElementById('connection-status').innerHTML = '<span class="status-indicator status-online"></span> Conectado';
+        socket.emit('user_joined', {username});
+        socket.emit('request_users_list');
+        connectedUsers.add(username);
+        updateUsersList();
+    });
+
+    socket.on('users_list', (users) => {
+        connectedUsers = new Set(users);
+        updateUsersList();
+    });
+
+    socket.on('disconnect', () => {
+        document.getElementById('connection-status').innerHTML = '<span class="status-indicator status-offline"></span> Desconectado';
+    });
+
+    socket.on('messages_history', (messages) => {
+        messages.forEach(msg => addMessage(msg));
+    });
+
+    socket.on('broadcast_message', (msg) => {
+        addMessage(msg);
+        if (msg.username !== username) {
+            new Audio('../static/notification.mp3').play();
+        }
+    });
+
+    socket.on('user_joined_broadcast', (data) => {
+        const chatBox = document.getElementById('chat-box');
+        const joinMessage = document.createElement('div');
+        joinMessage.className = 'system-message';
+        joinMessage.innerHTML = `<i class="fas fa-user-plus me-2 text-success"></i>${data.username} se ha unido al chat`;
+        chatBox.appendChild(joinMessage);
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+        connectedUsers.add(data.username);
+        updateUsersList();
+    });
+
+    socket.on('user_disconnected', (data) => {
+        const chatBox = document.getElementById('chat-box');
+        const leaveMessage = document.createElement('div');
+        leaveMessage.className = 'system-message';
+        leaveMessage.innerHTML = `<i class="fas fa-user-minus me-2 text-danger"></i>${data.username} ha salido del chat`;
+        chatBox.appendChild(leaveMessage);
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+        connectedUsers.delete(data.username);
+        updateUsersList();
+    });
+
+    socket.on('user_typing', (data) => {
+        if (data.username !== username) {
+            const typingStatus = document.getElementById('typing-status');
+            typingStatus.innerHTML = `<i class="fas fa-keyboard me-1"></i>${data.username} está escribiendo...`;
+            typingStatus.style.opacity = "1";
+
+            clearTimeout(typingTimer);
+            typingTimer = setTimeout(() => {
+                typingStatus.style.opacity = "0";
+                setTimeout(() => {
+                    typingStatus.textContent = '';
+                }, 300);
+            }, 2000);
+        }
+    });
+
+    document.getElementById('message-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const message = document.getElementById('message').value.trim();
+
+        if (message) {
+            socket.emit('new_message', {
+                username,
+                text: message,
+                time: new Date().toISOString()
+            });
+            document.getElementById('message').value = '';
+        }
+    });
+
+    document.getElementById('message').addEventListener('input', () => {
+        socket.emit('typing', {username});
+    });
+
+    document.getElementById('message').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            document.getElementById('message-form').dispatchEvent(new Event('submit'));
+        }
+    });
+
+    function updateUsersList() {
+        const usersListContainer = document.getElementById('other-users');
+        usersListContainer.innerHTML = '';
+
+        connectedUsers.forEach(user => {
+            if (user !== username) {
+                const userItem = document.createElement('div');
+                userItem.className = 'user-item d-flex align-items-center mb-2';
+                userItem.innerHTML = `
+                    <span class="status-indicator status-online"></span>
+                    <span>${user}</span>
+                `;
+                usersListContainer.appendChild(userItem);
+            }
+        });
+    }
+
+    function addMessage(msg) {
+        const chatBox = document.getElementById('chat-box');
+        const messageElement = document.createElement('div');
+
+        const sanitize = (str) => {
+            const temp = document.createElement('div');
+            temp.textContent = str;
+            return temp.innerHTML;
+        };
+
+        const sanitizedUsername = sanitize(msg.username);
+        const sanitizedText = sanitize(msg.text);
+        const isMyMessage = msg.username === username;
+
+        const timestamp = msg.time ? new Date(msg.time) : new Date();
+        const timeFormatted = timestamp.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+
+        messageElement.className = `p-3 m-3 ${isMyMessage ? 'my-message ms-auto' : 'other-message me-auto'}`;
+        messageElement.style.maxWidth = '70%';
+
+        if (isMyMessage) {
+            messageElement.innerHTML = `
+                <div>${sanitizedText}</div>
+                <div class="text-end small mt-1 opacity-75">${timeFormatted}</div>
+            `;
+        } else {
+            messageElement.innerHTML = `
+                <div class="fw-bold">${sanitizedUsername}</div>
+                <div>${sanitizedText}</div>
+                <div class="text-end small mt-1 opacity-75">${timeFormatted}</div>
+            `;
+        }
+
+        chatBox.appendChild(messageElement);
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    if (document.getElementById('toggle-users')) {
+        document.getElementById('toggle-users').addEventListener('click', () => {
+            alert('Lista de usuarios conectados: ' + Array.from(connectedUsers).join(', '));
+        });
+    }
+</script>
+</body>
+</html>
