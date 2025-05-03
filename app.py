@@ -23,10 +23,12 @@ login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'Por favor, inicia sesión para acceder a esta página.'
 
+
 # User loader para Flask-Login
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
+
 
 # Modelo de usuario para la base de datos
 class User(db.Model, UserMixin):
@@ -53,11 +55,13 @@ connected_users = set()
 with app.app_context():
     db.create_all()
 
+
 @app.route('/')
 @login_required
 def home():
     session['username'] = current_user.username
     return render_template('chat.html')
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -78,6 +82,7 @@ def login():
             flash('Usuario o contraseña incorrectos')
 
     return render_template('login.html')
+
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -116,6 +121,7 @@ def register():
 
     return render_template('register.html')
 
+
 @app.route('/logout')
 @login_required
 def logout():
@@ -123,10 +129,12 @@ def logout():
     session.pop('username', None)
     return redirect(url_for('login'))
 
+
 @socketio.on('connect')
 def handle_connect():
     print(f'Usuario conectado: {request.sid}')
     emit('messages_history', messages)
+
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -135,11 +143,11 @@ def handle_disconnect():
         connected_users.discard(username)
         emit('user_disconnected', {'username': username}, broadcast=True)
 
+
 @socketio.on('new_message')
 def handle_new_message(data):
     message = {'username': data['username'], 'text': data['text'], 'time': data.get('time')}
     messages.append(message)
-
     emit('broadcast_message', message, broadcast=True)
 
 
@@ -150,13 +158,16 @@ def handle_user_joined(data):
         connected_users.add(username)
         emit('user_joined_broadcast', {'username': username}, broadcast=True, include_self=False)
 
+
 @socketio.on('request_users_list')
 def handle_users_list_request():
     emit('users_list', list(connected_users))
+
 
 @socketio.on('typing')
 def handle_typing(data):
     emit('user_typing', data, broadcast=True)
 
+
 if __name__ == '__main__':
-    socketio.run(app, debug=True)
+    socketio.run(app, debug=True, host='0.0.0.0')
