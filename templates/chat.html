@@ -7,7 +7,8 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
-    <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='js/chat.js') }}" defer></script>
 </head>
 <body>
 <div class="container py-4">
@@ -43,6 +44,33 @@
                 <div class="row g-0">
                     <div class="col-md-3 d-none d-md-block">
                         <div class="users-sidebar">
+                            <!-- Chats disponibles -->
+                            <div class="mb-4">
+                                <h5 class="mb-3 d-flex justify-content-between">
+                                    <span><i class="fas fa-comments me-2"></i>Chats</span>
+                                    <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#newGroupModal">
+                                        <i class="fas fa-plus"></i>
+                                    </button>
+                                </h5>
+                                <div id="chat-rooms-list">
+                                    {% for room in chat_rooms %}
+                                    <a href="{{ url_for('chat_room', room_id=room.id) }}" class="chat-room-item d-flex align-items-center mb-2 text-decoration-none {% if room.id == current_room_id %}active{% endif %}">
+                                        <span class="chat-icon me-2">
+                                            {% if room.type == 'general' %}
+                                            <i class="fas fa-globe"></i>
+                                            {% elif room.type == 'direct' %}
+                                            <i class="fas fa-user"></i>
+                                            {% elif room.type == 'group' %}
+                                            <i class="fas fa-users"></i>
+                                            {% endif %}
+                                        </span>
+                                        <span class="chat-name">{{ room.name }}</span>
+                                    </a>
+                                    {% endfor %}
+                                </div>
+                            </div>
+
+                            <!-- Usuarios conectados -->
                             <h5 class="mb-3"><i class="fas fa-users me-2"></i>Usuarios</h5>
                             <div id="users-list">
                                 <div class="user-item d-flex align-items-center mb-2">
@@ -51,24 +79,71 @@
                                     <span class="ms-1 badge bg-secondary">tú</span>
                                 </div>
                                 <div id="other-users"></div>
+
+                                <!-- Lista de todos los usuarios para iniciar chats directos -->
+                                <h6 class="mt-3 mb-2">Iniciar chat con:</h6>
+                                <div>
+                                    {% for user in all_users %}
+                                    <div class="user-item d-flex align-items-center justify-content-between mb-2">
+                                        <div>
+                                            <span class="status-indicator
+                                                {% if user.username in connected_users %}status-online{% else %}status-offline{% endif %}">
+                                            </span>
+                                            <span>{{ user.username }}</span>
+                                        </div>
+                                        <form action="{{ url_for('create_direct_chat', user_id=user.id) }}" method="post">
+                                            <button type="submit" class="btn btn-sm btn-outline-primary">
+                                                <i class="fas fa-comment"></i>
+                                            </button>
+                                        </form>
+                                    </div>
+                                    {% endfor %}
+                                </div>
                             </div>
                         </div>
                     </div>
                     <div class="col-md-9">
                         <div class="chat-content">
                             <div class="d-flex justify-content-between align-items-center p-2 bg-light border-bottom">
-                                <div class="d-md-none">
-                                    <button class="btn btn-sm btn-outline-secondary" id="toggle-users">
-                                        <i class="fas fa-users"></i>
-                                    </button>
+                                <div class="d-flex align-items-center">
+                                    <div class="d-md-none me-2">
+                                        <button class="btn btn-sm btn-outline-secondary" id="toggle-users">
+                                            <i class="fas fa-users"></i>
+                                        </button>
+                                    </div>
+                                    <div>
+                                        {% for room in chat_rooms %}
+                                            {% if room.id == current_room_id %}
+                                                <strong>
+                                                    {% if room.type == 'general' %}
+                                                        <i class="fas fa-globe me-1"></i>
+                                                    {% elif room.type == 'direct' %}
+                                                        <i class="fas fa-user me-1"></i>
+                                                    {% elif room.type == 'group' %}
+                                                        <i class="fas fa-users me-1"></i>
+                                                    {% endif %}
+                                                    {{ room.name }}
+                                                </strong>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </div>
                                 </div>
                                 <div id="typing-status" class="fst-italic text-muted small"></div>
                             </div>
                             <div class="card-body p-0" id="chat-box">
-                                <!-- Messages will be here -->
+                                <!-- Los mensajes se cargarán aquí dinámicamente -->
+                                {% if room_messages %}
+                                    <script>
+                                        document.addEventListener('DOMContentLoaded', () => {
+                                            const messages = {{ room_messages|tojson }};
+                                            messages.forEach(msg => addMessage(msg));
+                                        });
+                                    </script>
+                                {% endif %}
                             </div>
                             <div class="chat-input">
                                 <form id="message-form">
+                                    <input type="hidden" id="current-room-id" value="{{ current_room_id }}">
                                     <div class="input-group">
                                         <input type="text" id="message" class="form-control"
                                                placeholder="Escribe un mensaje..." required>
@@ -86,165 +161,19 @@
     </div>
 </div>
 
-<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
-<script>
-    const socket = io();
-    let typingTimer;
-    const username = "{{ session.username }}";
-    let connectedUsers = new Set();
-
-    socket.on('connect', () => {
-        document.getElementById('connection-status').innerHTML = '<span class="status-indicator status-online"></span> Conectado';
-        socket.emit('user_joined', {username});
-        socket.emit('request_users_list');
-        connectedUsers.add(username);
-        updateUsersList();
-    });
-
-    socket.on('users_list', (users) => {
-        connectedUsers = new Set(users);
-        updateUsersList();
-    });
-
-    socket.on('disconnect', () => {
-        document.getElementById('connection-status').innerHTML = '<span class="status-indicator status-offline"></span> Desconectado';
-    });
-
-    socket.on('messages_history', (messages) => {
-        messages.forEach(msg => addMessage(msg));
-    });
-
-    socket.on('broadcast_message', (msg) => {
-        addMessage(msg);
-        if (msg.username !== username) {
-            new Audio('../static/notification.mp3').play();
-        }
-    });
-
-    socket.on('user_joined_broadcast', (data) => {
-        const chatBox = document.getElementById('chat-box');
-        const joinMessage = document.createElement('div');
-        joinMessage.className = 'system-message';
-        joinMessage.innerHTML = `<i class="fas fa-user-plus me-2 text-success"></i>${data.username} se ha unido al chat`;
-        chatBox.appendChild(joinMessage);
-        chatBox.scrollTop = chatBox.scrollHeight;
-
-        connectedUsers.add(data.username);
-        updateUsersList();
-    });
-
-    socket.on('user_disconnected', (data) => {
-        const chatBox = document.getElementById('chat-box');
-        const leaveMessage = document.createElement('div');
-        leaveMessage.className = 'system-message';
-        leaveMessage.innerHTML = `<i class="fas fa-user-minus me-2 text-danger"></i>${data.username} ha salido del chat`;
-        chatBox.appendChild(leaveMessage);
-        chatBox.scrollTop = chatBox.scrollHeight;
-
-        connectedUsers.delete(data.username);
-        updateUsersList();
-    });
-
-    socket.on('user_typing', (data) => {
-        if (data.username !== username) {
-            const typingStatus = document.getElementById('typing-status');
-            typingStatus.innerHTML = `<i class="fas fa-keyboard me-1"></i>${data.username} está escribiendo...`;
-            typingStatus.style.opacity = "1";
-
-            clearTimeout(typingTimer);
-            typingTimer = setTimeout(() => {
-                typingStatus.style.opacity = "0";
-                setTimeout(() => {
-                    typingStatus.textContent = '';
-                }, 300);
-            }, 2000);
-        }
-    });
-
-    document.getElementById('message-form').addEventListener('submit', (e) => {
-        e.preventDefault();
-        const message = document.getElementById('message').value.trim();
-
-        if (message) {
-            socket.emit('new_message', {
-                username,
-                text: message,
-                time: new Date().toISOString()
-            });
-            document.getElementById('message').value = '';
-        }
-    });
-
-    document.getElementById('message').addEventListener('input', () => {
-        socket.emit('typing', {username});
-    });
-
-    document.getElementById('message').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            document.getElementById('message-form').dispatchEvent(new Event('submit'));
-        }
-    });
-
-    function updateUsersList() {
-        const usersListContainer = document.getElementById('other-users');
-        usersListContainer.innerHTML = '';
-
-        connectedUsers.forEach(user => {
-            if (user !== username) {
-                const userItem = document.createElement('div');
-                userItem.className = 'user-item d-flex align-items-center mb-2';
-                userItem.innerHTML = `
-                    <span class="status-indicator status-online"></span>
-                    <span>${user}</span>
-                `;
-                usersListContainer.appendChild(userItem);
-            }
-        });
-    }
-
-    function addMessage(msg) {
-        const chatBox = document.getElementById('chat-box');
-        const messageElement = document.createElement('div');
-
-        const sanitize = (str) => {
-            const temp = document.createElement('div');
-            temp.textContent = str;
-            return temp.innerHTML;
-        };
-
-        const sanitizedUsername = sanitize(msg.username);
-        const sanitizedText = sanitize(msg.text);
-        const isMyMessage = msg.username === username;
-
-        const timestamp = msg.time ? new Date(msg.time) : new Date();
-        const timeFormatted = timestamp.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-
-        messageElement.className = `p-3 m-3 ${isMyMessage ? 'my-message ms-auto' : 'other-message me-auto'}`;
-        messageElement.style.maxWidth = '70%';
-
-        if (isMyMessage) {
-            messageElement.innerHTML = `
-                <div>${sanitizedText}</div>
-                <div class="text-end small mt-1 opacity-75">${timeFormatted}</div>
-            `;
-        } else {
-            messageElement.innerHTML = `
-                <div class="fw-bold">${sanitizedUsername}</div>
-                <div>${sanitizedText}</div>
-                <div class="text-end small mt-1 opacity-75">${timeFormatted}</div>
-            `;
-        }
-
-        chatBox.appendChild(messageElement);
-        chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    if (document.getElementById('toggle-users')) {
-        document.getElementById('toggle-users').addEventListener('click', () => {
-            alert('Lista de usuarios conectados: ' + Array.from(connectedUsers).join(', '));
-        });
-    }
-</script>
-</body>
-</html>
+<!-- Modal para crear nuevo grupo -->
+<div class="modal fade" id="newGroupModal" tabindex="-1" aria-labelledby="newGroupModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="newGroupModalLabel">Crear nuevo grupo</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form action="{{ url_for('create_group') }}" method="post">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="group_name" class="form-label">Nombre del grupo</label>
+                        <input type="text" class="form-control" id="group_name" name="group_name" required minlength="3">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label
