@@ -481,6 +481,128 @@ def handle_users_list_request():
     emit('users_list', list(connected_users))
 
 
+@socketio.on('request_direct_chat')
+def handle_chat_request(data):
+    if not current_user.is_authenticated:
+        return
+
+    # Obtener el nombre de usuario del destinatario
+    target_username = data.get('target_username')
+    if not target_username:
+        return
+
+    # Buscar al usuario destinatario
+    target_user = User.query.filter_by(username=target_username).first()
+    if not target_user:
+        return
+
+    # Verificar si ya existe un chat directo entre estos usuarios
+    existing_chat = None
+    user_rooms = UserChatRoom.query.filter_by(user_id=current_user.id).all()
+
+    for user_room in user_rooms:
+        room = user_room.chat_room
+        if room.room_type == 'direct':
+            # Verificar si el otro usuario también está en esta sala
+            other_in_room = UserChatRoom.query.filter_by(
+                user_id=target_user.id,
+                chat_room_id=room.id
+            ).first()
+
+            if other_in_room:
+                existing_chat = room
+                break
+
+    if existing_chat:
+        # Si ya existe un chat, simplemente redirigir
+        emit('chat_request_accepted', {
+            'room_id': existing_chat.id,
+            'target_username': target_username
+        })
+        return
+
+    # Enviar solicitud al usuario destinatario
+    # Buscar todas las sesiones conectadas
+    connected_sessions = connected_users
+
+    if target_username in connected_sessions:
+        # Emitir a todos y el cliente objetivo filtrará por nombre de usuario
+        emit('chat_request', {
+            'from_username': current_user.username,
+            'from_user_id': current_user.id,
+            'target_username': target_username,
+            'target_user_id': target_user.id
+        }, broadcast=True)
+    else:
+        # El usuario no está conectado
+        emit('system_message', {
+            'message': f'El usuario {target_username} no está conectado actualmente.'
+        })
+
+
+@socketio.on('accept_chat_request')
+def handle_accept_chat_request(data):
+    if not current_user.is_authenticated:
+        return
+
+    from_username = data.get('from_username')
+    from_user_id = data.get('from_user_id')
+
+    # Crear el chat directo
+    direct_chat = ChatRoom(
+        name=f"Chat entre {from_username} y {current_user.username}",
+        room_type='direct'
+    )
+    db.session.add(direct_chat)
+    db.session.flush()  # Para obtener el ID antes de commit
+
+    # Añadir a ambos usuarios al chat
+    user_room1 = UserChatRoom(user_id=from_user_id, chat_room_id=direct_chat.id)
+    user_room2 = UserChatRoom(user_id=current_user.id, chat_room_id=direct_chat.id)
+
+    db.session.add_all([user_room1, user_room2])
+    db.session.commit()
+
+    # Notificar al solicitante y a todos los usuarios (para actualizar listas de chat)
+    emit('chat_request_accepted', {
+        'room_id': direct_chat.id,
+        'target_username': current_user.username,
+        'from_username': from_username,
+        'chat_name': direct_chat.name,
+        'chat_type': direct_chat.room_type,
+        'chat_id': direct_chat.id
+    }, broadcast=True)
+
+    # Emitir evento para actualizar la lista de chats
+    emit('update_chat_list', {}, broadcast=True)
+
+
+@socketio.on('reject_chat_request')
+def handle_reject_chat_request(data):
+    if not current_user.is_authenticated:
+        return
+
+    from_username = data.get('from_username')
+
+    # Notificar al solicitante que se rechazó la solicitud
+    for sid, sid_data in socketio.server.manager.get_participants('/').items():
+        if sid_data.get('username') == from_username:
+            emit('chat_request_rejected', {
+                'target_username': current_user.username
+            }, room=sid)
+            break
+
+
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0')
+
+
+
+
+
+
+
+
+
+
 

@@ -4,6 +4,32 @@ let username;
 let connectedUsers = new Set();
 let currentRoomId;
 
+// Variables para gestionar solicitudes de chat
+let pendingChatRequest = null;
+let chatRequestModal = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Inicializar el modal de solicitud de chat
+    chatRequestModal = new bootstrap.Modal(document.getElementById('chatRequestModal'));
+
+    // Configurar botones de aceptar/rechazar solicitud
+    document.getElementById('accept-chat-request').addEventListener('click', () => {
+        if (pendingChatRequest) {
+            socket.emit('accept_chat_request', pendingChatRequest);
+            chatRequestModal.hide();
+            pendingChatRequest = null;
+        }
+    });
+
+    document.getElementById('reject-chat-request').addEventListener('click', () => {
+        if (pendingChatRequest) {
+            socket.emit('reject_chat_request', pendingChatRequest);
+            chatRequestModal.hide();
+            pendingChatRequest = null;
+        }
+    });
+});
+
 socket.on('init_data', (data) => {
     username = data.username;
 
@@ -58,25 +84,13 @@ socket.on('broadcast_message', (msg) => {
 });
 
 socket.on('user_joined_broadcast', (data) => {
-    const chatBox = document.getElementById('chat-box');
-    const joinMessage = document.createElement('div');
-    joinMessage.className = 'system-message';
-    joinMessage.innerHTML = `<i class="fas fa-user-plus me-2 text-success"></i>${data.username} se ha unido al chat`;
-    chatBox.appendChild(joinMessage);
-    chatBox.scrollTop = chatBox.scrollHeight;
-
+    // Ya no mostramos mensajes de conexión
     connectedUsers.add(data.username);
     updateUsersList();
 });
 
 socket.on('user_disconnected', (data) => {
-    const chatBox = document.getElementById('chat-box');
-    const leaveMessage = document.createElement('div');
-    leaveMessage.className = 'system-message';
-    leaveMessage.innerHTML = `<i class="fas fa-user-minus me-2 text-danger"></i>${data.username} ha salido del chat`;
-    chatBox.appendChild(leaveMessage);
-    chatBox.scrollTop = chatBox.scrollHeight;
-
+    // Ya no mostramos mensajes de desconexión
     connectedUsers.delete(data.username);
     updateUsersList();
 });
@@ -133,13 +147,38 @@ function updateUsersList() {
     connectedUsers.forEach(user => {
         if (user !== username) {
             const userItem = document.createElement('div');
-            userItem.className = 'user-item d-flex align-items-center mb-2';
-            userItem.innerHTML = `
+            userItem.className = 'user-item d-flex align-items-center justify-content-between mb-2';
+
+            // Parte izquierda: usuario y estado
+            const userInfo = document.createElement('div');
+            userInfo.className = 'd-flex align-items-center';
+            userInfo.innerHTML = `
                 <span class="status-indicator status-online"></span>
                 <span>${user}</span>
             `;
+
+            // Parte derecha: botón para iniciar chat
+            const actionButtons = document.createElement('div');
+            const chatButton = document.createElement('button');
+            chatButton.className = 'btn btn-sm btn-outline-primary ms-2';
+            chatButton.innerHTML = '<i class="fas fa-comment"></i>';
+            chatButton.addEventListener('click', () => requestDirectChat(user));
+
+            actionButtons.appendChild(chatButton);
+
+            // Agregar ambas partes al elemento principal
+            userItem.appendChild(userInfo);
+            userItem.appendChild(actionButtons);
+
             usersListContainer.appendChild(userItem);
         }
+    });
+}
+
+// Función para solicitar un chat directo
+function requestDirectChat(targetUser) {
+    socket.emit('request_direct_chat', {
+        target_username: targetUser
     });
 }
 
@@ -186,3 +225,37 @@ if (toggleUsersButton) {
         alert('Lista de usuarios conectados: ' + Array.from(connectedUsers).join(', '));
     });
 }
+
+// Recibir solicitud de chat
+socket.on('chat_request', (data) => {
+    pendingChatRequest = data;
+    document.getElementById('chat-request-message').textContent =
+        `${data.from_username} desea iniciar un chat contigo. ¿Aceptas?`;
+    chatRequestModal.show();
+
+    // Reproducir sonido de notificación
+    new Audio('../static/notification.mp3').play();
+});
+
+// Recibir respuesta a solicitud de chat
+socket.on('chat_request_accepted', (data) => {
+    // Si la solicitud es para el usuario actual (el que inició o el que aceptó)
+    if (data.from_username === username || data.target_username === username) {
+        // Redireccionar al nuevo chat
+        window.location.href = `/chat/${data.room_id}`;
+    } else {
+        // Para otros usuarios, solo actualizar la lista de chats si es necesario
+        // No recargamos la página para no interrumpir sus conversaciones actuales
+    }
+});
+
+socket.on('chat_request_rejected', (data) => {
+    alert(`${data.target_username} ha rechazado tu solicitud de chat.`);
+});
+
+// Agregar evento para actualizar la lista de chats en tiempo real
+socket.on('update_chat_list', () => {
+    // Recargar la lista de chats cuando se crea uno nuevo
+    window.location.reload();
+});
+
