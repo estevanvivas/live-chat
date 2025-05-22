@@ -243,19 +243,50 @@ socket.on('chat_request_accepted', (data) => {
     if (data.from_username === username || data.target_username === username) {
         // Redireccionar al nuevo chat
         window.location.href = `/chat/${data.room_id}`;
-    } else {
-        // Para otros usuarios, solo actualizar la lista de chats si es necesario
-        // No recargamos la página para no interrumpir sus conversaciones actuales
     }
+});
+
+// Actualizar la lista de chats sin recargar la página
+socket.on('update_chat_list_response', (data) => {
+    // Obtener el contenedor de la lista de chats
+    const chatRoomsList = document.getElementById('chat-rooms-list');
+    if (!chatRoomsList) return;
+
+    // Limpiar la lista actual
+    chatRoomsList.innerHTML = '';
+
+    // Añadir cada sala a la lista
+    data.chat_rooms.forEach(room => {
+        const roomItem = document.createElement('a');
+        roomItem.href = `/chat/${room.id}`;
+        roomItem.className = `chat-room-item d-flex align-items-center mb-2 text-decoration-none ${room.id === currentRoomId ? 'active' : ''}`;
+
+        let roomIcon = '';
+        if (room.type === 'general') {
+            roomIcon = '<i class="fas fa-globe"></i>';
+        } else if (room.type === 'direct') {
+            roomIcon = '<i class="fas fa-user"></i>';
+        } else if (room.type === 'group') {
+            roomIcon = '<i class="fas fa-users"></i>';
+        }
+
+        roomItem.innerHTML = `
+            <span class="chat-icon me-2">
+                ${roomIcon}
+            </span>
+            <span class="chat-name">${room.name}</span>
+        `;
+
+        chatRoomsList.appendChild(roomItem);
+    });
 });
 
 socket.on('chat_request_rejected', (data) => {
     alert(`${data.target_username} ha rechazado tu solicitud de chat.`);
 });
 
-// Agregar evento para actualizar la lista de chats en tiempo real
+// Cuando se recibe una señal para actualizar la lista de chats, solicitar la lista actualizada
 socket.on('update_chat_list', () => {
-    // Recargar la lista de chats cuando se crea uno nuevo
-    window.location.reload();
+    socket.emit('update_chat_list');
 });
 

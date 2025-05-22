@@ -1,1 +1,223 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat en Vivo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='js/chat.js') }}" defer></script>
+</head>
+<body>
+<div class="container py-4">
+    <div class="row">
+        <div class="col-12">
+            <div class="chat-container bg-white">
+                <div class="chat-header">
+                    <div class="d-flex flex-wrap align-items-center justify-content-between py-2">
+                        <div class="d-flex align-items-center me-auto mb-2 mb-md-0">
+                            <h3 class="mb-0 me-2"><i class="fas fa-comments me-2"></i>Chat en Vivo</h3>
+                            <div id="connection-status" class="d-flex align-items-center ms-2">
+                                <span class="status-indicator status-online"></span>
+                                <span class="d-none d-sm-inline">Conectado</span>
+                            </div>
+                        </div>
 
+                        <div class="d-flex align-items-center">
+                            <div class="user-avatar d-none d-sm-flex">
+                                {{ current_user.username[0].upper() }}
+                            </div>
+                            <div class="mx-2">
+                                <strong>{{ current_user.username }}</strong>
+                                <div class="small text-light">En línea</div>
+                            </div>
+                            <a href="{{ url_for('logout') }}" class="btn btn-sm btn-light ms-2">
+                                <i class="fas fa-sign-out-alt"></i>
+                                <span class="d-none d-sm-inline ms-1">Salir</span>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row g-0">
+                    <div class="col-md-3 d-none d-md-block">
+                        <div class="users-sidebar">
+                            <div class="mb-4">
+                                <h5 class="mb-3 d-flex justify-content-between">
+                                    <span><i class="fas fa-comments me-2"></i>Chats</span>
+                                    <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal"
+                                            data-bs-target="#newGroupModal">
+                                        <i class="fas fa-plus"></i>
+                                    </button>
+                                </h5>
+                                <div id="chat-rooms-list">
+                                    {% for room in chat_rooms %}
+                                        <a href="{{ url_for('chat_room', room_id=room.id) }}"
+                                           class="chat-room-item d-flex align-items-center mb-2 text-decoration-none {% if room.id == current_room_id %}active{% endif %}">
+                                        <span class="chat-icon me-2">
+                                            {% if room.type == 'general' %}
+                                                <i class="fas fa-globe"></i>
+                                            {% elif room.type == 'direct' %}
+                                                <i class="fas fa-user"></i>
+                                            {% elif room.type == 'group' %}
+                                                <i class="fas fa-users"></i>
+                                            {% endif %}
+                                        </span>
+                                            <span class="chat-name">{{ room.name }}</span>
+                                        </a>
+                                    {% endfor %}
+                                </div>
+                            </div>
+
+                            <h5 class="mb-3"><i class="fas fa-users me-2"></i>Usuarios en línea</h5>
+                            <div id="users-list">
+                                <div class="user-item d-flex align-items-center mb-2">
+                                    <span class="status-indicator status-online"></span>
+                                    <span>{{ current_user.username }}</span>
+                                    <span class="ms-1 badge bg-secondary">tú</span>
+                                </div>
+                                <div id="other-users"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-9">
+                        <div class="chat-content">
+                            <div class="d-flex justify-content-between align-items-center p-2 bg-light border-bottom">
+                                <div class="d-flex align-items-center">
+                                    <div class="d-md-none me-2">
+                                        <button class="btn btn-sm btn-outline-secondary" id="toggle-users">
+                                            <i class="fas fa-users"></i>
+                                        </button>
+                                    </div>
+                                    <div>
+                                        {% for room in chat_rooms %}
+                                            {% if room.id == current_room_id %}
+                                                <strong>
+                                                    {% if room.type == 'general' %}
+                                                        <i class="fas fa-globe me-1"></i>
+                                                    {% elif room.type == 'direct' %}
+                                                        <i class="fas fa-user me-1"></i>
+                                                    {% elif room.type == 'group' %}
+                                                        <i class="fas fa-users me-1"></i>
+                                                    {% endif %}
+                                                    {{ room.name }}
+                                                </strong>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                                <div id="typing-status" class="fst-italic text-muted small"></div>
+                            </div>
+                            <div class="card-body p-0" id="chat-box">
+                                {% if room_messages %}
+                                    <script>
+                                        document.addEventListener('DOMContentLoaded', () => {
+                                            const messages = {{ room_messages|tojson }};
+                                            messages.forEach(msg => addMessage(msg));
+                                        });
+                                    </script>
+                                {% endif %}
+                            </div>
+                            <div class="chat-input">
+                                <form id="message-form">
+                                    <input type="hidden" id="current-room-id" value="{{ current_room_id }}">
+                                    <div class="input-group">
+                                        <input type="text" id="message" class="form-control"
+                                               placeholder="Escribe un mensaje..." required>
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="fas fa-paper-plane me-1"></i>Enviar
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="newGroupModal" tabindex="-1" aria-labelledby="newGroupModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="newGroupModalLabel">Crear nuevo grupo</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form action="{{ url_for('create_group') }}" method="post">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="group_name" class="form-label">Nombre del grupo</label>
+                        <input type="text" class="form-control" id="group_name" name="group_name" required
+                               minlength="3">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Miembros</label>
+                        <div class="user-selection">
+                            {% for user in all_users %}
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" value="{{ user.id }}"
+                                           id="user-{{ user.id }}" name="member_ids">
+                                    <label class="form-check-label" for="user-{{ user.id }}">
+                                        {{ user.username }}
+                                    </label>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary">Crear grupo</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="chatRequestModal" tabindex="-1" aria-labelledby="chatRequestModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="chatRequestModalLabel">Solicitud de chat</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="chat-request-message"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="reject-chat-request">
+                    Rechazar
+                </button>
+                <button type="button" class="btn btn-primary" id="accept-chat-request">Aceptar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="groupInviteModal" tabindex="-1" aria-labelledby="groupInviteModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="groupInviteModalLabel">Invitación a grupo</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="group-invite-message"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="reject-group-invite">
+                    Rechazar
+                </button>
+                <button type="button" class="btn btn-primary" id="accept-group-invite">Aceptar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

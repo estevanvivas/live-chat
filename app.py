@@ -3,7 +3,7 @@ from flask_socketio import SocketIO, emit
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
-from datetime import datetime, timezone
+from datetime import datetime
 from dotenv import load_dotenv
 import os
 import re
@@ -18,11 +18,11 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 socketio = SocketIO(app)
 
-# Configuración de Flask-Login
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'Por favor, inicia sesión para acceder a esta página.'
 
+user_sessions = {}
 
 # User loader para Flask-Login
 @login_manager.user_loader
@@ -36,7 +36,7 @@ class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     password = db.Column(db.String(256), nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now())
     # Relaciones
     messages = db.relationship('Message', backref='sender', lazy=True)
     chat_rooms = db.relationship('UserChatRoom', back_populates='user')
@@ -49,13 +49,12 @@ class User(db.Model, UserMixin):
         return f'<Usuario: {self.username}>'
 
 
-# Modelo para salas de chat (general, directo o grupo)
 class ChatRoom(db.Model):
     __tablename__ = 'chat_rooms'
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=True)  # Nombre opcional para grupos
-    room_type = db.Column(db.String(20), nullable=False)  # 'general', 'direct', 'group'
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    name = db.Column(db.String(100), nullable=True)
+    room_type = db.Column(db.String(20), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now())
 
     # Relaciones
     messages = db.relationship('Message', backref='chat_room', lazy=True, cascade='all, delete-orphan')
@@ -70,7 +69,7 @@ class Message(db.Model):
     __tablename__ = 'messages'
     id = db.Column(db.Integer, primary_key=True)
     text = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now())
 
     # Claves foráneas
     sender_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
@@ -95,8 +94,8 @@ class UserChatRoom(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     chat_room_id = db.Column(db.Integer, db.ForeignKey('chat_rooms.id'), nullable=False)
-    is_admin = db.Column(db.Boolean, default=False)  # Para grupos
-    last_read = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    is_admin = db.Column(db.Boolean, default=False)
+    last_read = db.Column(db.DateTime, default=lambda: datetime.now())
 
     # Relaciones
     user = db.relationship('User', back_populates='chat_rooms')
@@ -200,12 +199,20 @@ def register():
             flash('El nombre de usuario debe tener al menos 5 caracteres')
             return render_template('register.html')
 
+        if len(username) > 20:
+            flash('El nombre de usuario no puede tener más de 20 caracteres')
+            return render_template('register.html')
+
         if not re.match(r'^[a-zA-Z0-9_.-]+$', username):
             flash('El nombre de usuario solo puede contener letras, números, guiones bajos, puntos y guiones')
             return render_template('register.html')
 
         if len(password) < 8:
             flash('La contraseña debe tener al menos 8 caracteres')
+            return render_template('register.html')
+
+        if len(password) > 20:
+            flash('La contraseña no puede tener más de 20 caracteres')
             return render_template('register.html')
 
         existing_user = User.query.filter_by(username=username).first()
@@ -228,25 +235,31 @@ def register():
 @app.route('/logout')
 @login_required
 def logout():
+    username = current_user.username
+
+    if username in user_sessions:
+        emit('user_disconnected', {'username': username}, broadcast=True, namespace='/')
+
+        user_sessions.pop(username, None)
+        connected_users.discard(username)
+
     logout_user()
     session.pop('username', None)
+
     return redirect(url_for('login'))
 
 
 @app.route('/create_direct_chat/<int:user_id>', methods=['POST'])
 @login_required
 def create_direct_chat(user_id):
-    # Verificar que el usuario existe
     other_user = User.query.get_or_404(user_id)
 
-    # Buscar si ya existe un chat directo entre estos usuarios
     direct_chat = None
     user_rooms = UserChatRoom.query.filter_by(user_id=current_user.id).all()
 
     for user_room in user_rooms:
         room = user_room.chat_room
         if room.room_type == 'direct':
-            # Verificar si el otro usuario también está en esta sala
             other_in_room = UserChatRoom.query.filter_by(
                 user_id=other_user.id,
                 chat_room_id=room.id
@@ -256,16 +269,14 @@ def create_direct_chat(user_id):
                 direct_chat = room
                 break
 
-    # Si no existe un chat directo, crearlo
     if not direct_chat:
         direct_chat = ChatRoom(
             name=f"Chat entre {current_user.username} y {other_user.username}",
             room_type='direct'
         )
         db.session.add(direct_chat)
-        db.session.flush()  # Para obtener el ID antes de commit
+        db.session.flush()
 
-        # Añadir a ambos usuarios al chat
         user_room1 = UserChatRoom(user_id=current_user.id, chat_room_id=direct_chat.id)
         user_room2 = UserChatRoom(user_id=other_user.id, chat_room_id=direct_chat.id)
 
@@ -285,15 +296,13 @@ def create_group():
         flash('El nombre del grupo debe tener al menos 3 caracteres')
         return redirect(url_for('home'))
 
-    # Crear la sala de grupo
     group_chat = ChatRoom(
         name=group_name,
         room_type='group'
     )
     db.session.add(group_chat)
-    db.session.flush()  # Para obtener el ID antes de commit
+    db.session.flush()
 
-    # Añadir al creador como administrador
     creator_room = UserChatRoom(
         user_id=current_user.id,
         chat_room_id=group_chat.id,
@@ -301,16 +310,26 @@ def create_group():
     )
     db.session.add(creator_room)
 
-    # Añadir a los miembros seleccionados
+    all_members = [current_user.id]
+
     for member_id in member_ids:
-        if int(member_id) != current_user.id:  # Evitar duplicados
+        member_id = int(member_id)
+        if member_id != current_user.id:
             member_room = UserChatRoom(
-                user_id=int(member_id),
+                user_id=member_id,
                 chat_room_id=group_chat.id
             )
             db.session.add(member_room)
+            all_members.append(member_id)
 
     db.session.commit()
+
+    for member_id in all_members:
+        member = User.query.get(member_id)
+        if member and member.username in user_sessions:
+            for sid in user_sessions[member.username]:
+                socketio.emit('update_chat_list', {}, room=sid)
+
     return redirect(url_for('home'))
 
 
@@ -335,7 +354,6 @@ def chat_room(room_id):
             'type': room.room_type
         }
 
-        # Para chats directos, usar el nombre del otro usuario
         if room.room_type == 'direct':
             other_user = UserChatRoom.query.filter(
                 UserChatRoom.chat_room_id == room.id,
@@ -368,11 +386,15 @@ def handle_connect():
     username = session.get('username')
     user_id = current_user.id if current_user.is_authenticated else None
 
+    if username:
+        if username not in user_sessions:
+            user_sessions[username] = []
+        user_sessions[username].append(request.sid)
+        connected_users.add(username)
+
     if user_id:
-        # Obtener todas las salas de chat del usuario
         user_rooms = UserChatRoom.query.filter_by(user_id=user_id).all()
         for user_room in user_rooms:
-            # Unirse a la sala de socket.io correspondiente
             socketio.server.enter_room(request.sid, f"room_{user_room.chat_room_id}")
 
     # Inicializar datos - solo para compatibilidad con la versión anterior
@@ -386,8 +408,14 @@ def handle_connect():
 def handle_disconnect():
     username = session.get('username')
     if username:
-        connected_users.discard(username)
-        emit('user_disconnected', {'username': username}, broadcast=True)
+        # Eliminar esta sesión específica de la lista de sesiones del usuario
+        if username in user_sessions and request.sid in user_sessions[username]:
+            user_sessions[username].remove(request.sid)
+            # Si no quedan sesiones, eliminar el usuario de la lista de conectados
+            if not user_sessions[username]:
+                user_sessions.pop(username, None)
+                connected_users.discard(username)
+                emit('user_disconnected', {'username': username}, broadcast=True)
 
 
 @socketio.on('join_room')
@@ -403,8 +431,7 @@ def handle_join_room(data):
         if user_room:
             socketio.server.enter_room(request.sid, f"room_{room_id}")
 
-            # Actualizar el timestamp de última lectura
-            user_room.last_read = datetime.now(timezone.utc)
+            user_room.last_read = datetime.now()
             db.session.commit()
 
             # Obtener los mensajes de esta sala
@@ -447,14 +474,11 @@ def handle_new_message(data):
     db.session.add(new_message)
     db.session.commit()
 
-    # Preparar datos para enviar
     message_data = new_message.to_dict()
 
-    # Emitir el mensaje a todos los usuarios en la sala
     emit('broadcast_message', message_data, room=f"room_{room_id}")
 
-    # Actualizar el timestamp de última lectura
-    user_room.last_read = datetime.now(timezone.utc)
+    user_room.last_read = datetime.now()
     db.session.commit()
 
 
@@ -486,24 +510,20 @@ def handle_chat_request(data):
     if not current_user.is_authenticated:
         return
 
-    # Obtener el nombre de usuario del destinatario
     target_username = data.get('target_username')
     if not target_username:
         return
 
-    # Buscar al usuario destinatario
     target_user = User.query.filter_by(username=target_username).first()
     if not target_user:
         return
 
-    # Verificar si ya existe un chat directo entre estos usuarios
     existing_chat = None
     user_rooms = UserChatRoom.query.filter_by(user_id=current_user.id).all()
 
     for user_room in user_rooms:
         room = user_room.chat_room
         if room.room_type == 'direct':
-            # Verificar si el otro usuario también está en esta sala
             other_in_room = UserChatRoom.query.filter_by(
                 user_id=target_user.id,
                 chat_room_id=room.id
@@ -514,30 +534,63 @@ def handle_chat_request(data):
                 break
 
     if existing_chat:
-        # Si ya existe un chat, simplemente redirigir
         emit('chat_request_accepted', {
             'room_id': existing_chat.id,
             'target_username': target_username
         })
         return
 
-    # Enviar solicitud al usuario destinatario
-    # Buscar todas las sesiones conectadas
-    connected_sessions = connected_users
+    if target_username in connected_users:
+        if target_username in user_sessions and user_sessions[target_username]:
+            target_found = False
+            for target_sid in user_sessions[target_username]:
+                emit('chat_request', {
+                    'from_username': current_user.username,
+                    'from_user_id': current_user.id,
+                    'target_username': target_username,
+                    'target_user_id': target_user.id
+                }, room=target_sid)
+                target_found = True
 
-    if target_username in connected_sessions:
-        # Emitir a todos y el cliente objetivo filtrará por nombre de usuario
-        emit('chat_request', {
-            'from_username': current_user.username,
-            'from_user_id': current_user.id,
-            'target_username': target_username,
-            'target_user_id': target_user.id
-        }, broadcast=True)
+            if target_found:
+                return
+
+        emit('system_message', {
+            'message': f'No se pudo enviar la solicitud a {target_username}.'
+        })
     else:
-        # El usuario no está conectado
         emit('system_message', {
             'message': f'El usuario {target_username} no está conectado actualmente.'
         })
+
+
+@socketio.on('update_chat_list')
+def handle_update_chat_list():
+    if not current_user.is_authenticated:
+        return
+
+    user_rooms = UserChatRoom.query.filter_by(user_id=current_user.id).all()
+
+    chat_rooms = []
+    for user_room in user_rooms:
+        room = user_room.chat_room
+        room_data = {
+            'id': room.id,
+            'name': room.name,
+            'type': room.room_type
+        }
+
+        if room.room_type == 'direct':
+            other_user = UserChatRoom.query.filter(
+                UserChatRoom.chat_room_id == room.id,
+                UserChatRoom.user_id != current_user.id
+            ).first()
+            if other_user:
+                room_data['name'] = other_user.user.username
+
+        chat_rooms.append(room_data)
+
+    emit('update_chat_list_response', {'chat_rooms': chat_rooms})
 
 
 @socketio.on('accept_chat_request')
@@ -548,33 +601,38 @@ def handle_accept_chat_request(data):
     from_username = data.get('from_username')
     from_user_id = data.get('from_user_id')
 
-    # Crear el chat directo
     direct_chat = ChatRoom(
         name=f"Chat entre {from_username} y {current_user.username}",
         room_type='direct'
     )
     db.session.add(direct_chat)
-    db.session.flush()  # Para obtener el ID antes de commit
+    db.session.flush()
 
-    # Añadir a ambos usuarios al chat
     user_room1 = UserChatRoom(user_id=from_user_id, chat_room_id=direct_chat.id)
     user_room2 = UserChatRoom(user_id=current_user.id, chat_room_id=direct_chat.id)
 
     db.session.add_all([user_room1, user_room2])
     db.session.commit()
 
-    # Notificar al solicitante y a todos los usuarios (para actualizar listas de chat)
     emit('chat_request_accepted', {
         'room_id': direct_chat.id,
         'target_username': current_user.username,
-        'from_username': from_username,
-        'chat_name': direct_chat.name,
-        'chat_type': direct_chat.room_type,
-        'chat_id': direct_chat.id
-    }, broadcast=True)
+        'from_username': from_username
+    }, room=request.sid)
 
-    # Emitir evento para actualizar la lista de chats
-    emit('update_chat_list', {}, broadcast=True)
+    if from_username in user_sessions:
+        for sid in user_sessions[from_username]:
+            emit('chat_request_accepted', {
+                'room_id': direct_chat.id,
+                'target_username': current_user.username,
+                'from_username': from_username
+            }, room=sid)
+
+    emit('update_chat_list', {}, room=request.sid)
+
+    if from_username in user_sessions:
+        for sid in user_sessions[from_username]:
+            emit('update_chat_list', {}, room=sid)
 
 
 @socketio.on('reject_chat_request')
@@ -584,25 +642,12 @@ def handle_reject_chat_request(data):
 
     from_username = data.get('from_username')
 
-    # Notificar al solicitante que se rechazó la solicitud
-    for sid, sid_data in socketio.server.manager.get_participants('/').items():
-        if sid_data.get('username') == from_username:
+    if from_username in user_sessions:
+        for sid in user_sessions[from_username]:
             emit('chat_request_rejected', {
                 'target_username': current_user.username
             }, room=sid)
-            break
 
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0')
-
-
-
-
-
-
-
-
-
-
-
